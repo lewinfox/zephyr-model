@@ -1,3 +1,3 @@
 # zephyr-model
 
-Predictive model for (zephyrapp.nz)[https://zephyrapp.nz].
+Predictive model for [zephyrapp.nz](https://zephyrapp.nz).
