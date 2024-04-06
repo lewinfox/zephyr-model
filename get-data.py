@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import os
 import re
+import sys
 
 import aiohttp
 import requests
@@ -107,5 +108,11 @@ async def _get_data(
 
 
 if __name__ == "__main__":
+
+    if len(sys.argv) == 2:
+        from_date = sys.argv[1]
+    else:
+        print("Usage: python get-data.py '<from-date>'")
+
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(_get_data("2010-01-01"))
+    loop.run_until_complete(_get_data(from_date))
