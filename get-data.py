@@ -13,7 +13,7 @@ ZEPHYR_FUNCTION_URL = (
 )
 
 
-def _parse_date(x: int | str | datetime.datetime) -> int | None:
+def _parse_date(x: int | str | datetime.datetime | None) -> int | None:
     """
     Parse date
 
@@ -30,22 +30,28 @@ def _parse_date(x: int | str | datetime.datetime) -> int | None:
     if x is None or isinstance(x, int):
         return x
     elif isinstance(x, str):
-        for ts in allowed_timestamp_formats:
+        for fmt in allowed_timestamp_formats:
             try:
-                x = datetime.datetime.strptime(x, ts)
-                return int(x.timestamp())
+                ts = datetime.datetime.strptime(x, fmt)
+                return int(ts.timestamp())
             except Exception as e:
                 continue
 
     raise ValueError(f"Unable to interpret {x} as a timestamp")
 
 
-def _get_download_urls(from_date: int, to_date: int | None = None) -> dict:
+def _get_download_urls(
+    from_date: int | str | datetime.datetime,
+    to_date: int | str | datetime.datetime | None = None,
+) -> dict:
+
+    from_date = _parse_date(from_date)  # type: ignore
+    to_date = _parse_date(to_date)
 
     # Request download URLs for all relevant files
     res = requests.get(
         ZEPHYR_FUNCTION_URL,
-        params={"key": ZEPHYR_DATASTORE_KEY, "dateFrom": from_date, "dateTo": to_date},
+        params={"key": ZEPHYR_DATASTORE_KEY, "dateFrom": from_date, "dateTo": to_date},  # type: ignore
     )
 
     res.raise_for_status()
@@ -80,15 +86,12 @@ async def _download_file(
 
 async def _get_data(
     from_date: int | str | datetime.datetime,
-    to_date: int | str | datetime.datetime = None,
+    to_date: int | str | datetime.datetime | None = None,
     download_dir="./data",
 ):
     """
     Download Zephyr data
     """
-
-    from_date = _parse_date(from_date)
-    to_date = _parse_date(to_date)
 
     if not os.path.exists(download_dir):
         os.makedirs(download_dir)
@@ -96,7 +99,7 @@ async def _get_data(
     download_paths = [x["url"] for x in _get_download_urls(from_date, to_date)]
 
     filename_regex = re.compile(r"zephyr-scrape-[0-9]{10}.json")
-    filenames = [filename_regex.search(p).group() for p in download_paths]
+    filenames = [filename_regex.search(p).group() for p in download_paths]  # type: ignore
 
     async with aiohttp.ClientSession() as session:
         tasks = [

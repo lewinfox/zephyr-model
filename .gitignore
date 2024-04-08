@@ -1,1 +1,5 @@
-data
+data/
+.mypy_cache/
+
+# sqlite database used in development
+*.db
