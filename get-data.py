@@ -8,9 +8,7 @@ import aiohttp
 import requests
 
 ZEPHYR_DATASTORE_KEY = os.environ["ZEPHYR_DATASTORE_KEY"]
-ZEPHYR_FUNCTION_URL = (
-    "https://australia-southeast1-zephyr-3fb26.cloudfunctions.net/output"
-)
+ZEPHYR_DATASTORE_URL = "https://api.zephyrapp.nz/v1/json-output"
 
 
 def _parse_date(x: int | str | datetime.datetime | None) -> int | None:
@@ -41,16 +39,31 @@ def _parse_date(x: int | str | datetime.datetime | None) -> int | None:
 
 
 def _get_download_urls(
-    from_date: int | str | datetime.datetime,
+    from_date: int | str | datetime.datetime | None = None,
     to_date: int | str | datetime.datetime | None = None,
-) -> dict:
+) -> list[dict]:
+    """
+    Get data
+
+    ## Parameters
+
+    `from_date`, `to_date`: int | str | datetime.datetime
+        Optional. Can be Unix timestamp, string or date, or `None`.
+
+    ## Returns
+
+    `list[dict]`
+        List of dictionaries, where each dictionary contains a `url` key that
+        provides a download URL for a JSON document containing weather station
+        data.
+    """
 
     from_date = _parse_date(from_date)  # type: ignore
     to_date = _parse_date(to_date)
 
     # Request download URLs for all relevant files
     res = requests.get(
-        ZEPHYR_FUNCTION_URL,
+        ZEPHYR_DATASTORE_URL,
         params={"key": ZEPHYR_DATASTORE_KEY, "dateFrom": from_date, "dateTo": to_date},  # type: ignore
     )
 
@@ -116,6 +129,7 @@ if __name__ == "__main__":
         from_date = sys.argv[1]
     else:
         print("Usage: python get-data.py '<from-date>'")
+        sys.exit(1)
 
     loop = asyncio.get_event_loop()
     loop.run_until_complete(_get_data(from_date))
