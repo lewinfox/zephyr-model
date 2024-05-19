@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import sqlite3
@@ -6,6 +7,14 @@ from math import atan2, cos, radians, sin, sqrt
 import pandas as pd
 
 SQLITE_DB = "zephyr-model.db"
+ALL_TABLES = ["observations", "stations", "station_distances"]
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(usage="python compile-data.py [table]")
+    parser.add_argument("-t", "--tables", required=False, nargs="*", default=ALL_TABLES)
+    args = parser.parse_args()
+    return args
 
 
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -60,7 +69,12 @@ def distance_between_stations(stations: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Not interested in the distance from a station to itself
-    return all_stations[all_stations["km_between"] > 0.0]
+    res = all_stations[all_stations["km_between"] > 0.0]
+
+    # Ignore all the columns that already exist in the `stations` table
+    res = res[["id_from", "id_to", "km_between"]]
+
+    return res
 
 
 def _consolidate_files(data_dir: str = "data") -> pd.DataFrame:
@@ -71,20 +85,33 @@ def _consolidate_files(data_dir: str = "data") -> pd.DataFrame:
     for root, dirs, files in os.walk(data_dir):
         for f in files:
             with open(os.path.join(root, f), "r") as fi:
+                print(f"Reading {f}")
                 data.extend(json.load(fi))
+
+    print("Compiling data")
 
     df = pd.json_normalize(data, sep="_")
     return df
 
 
 if __name__ == "__main__":
+
+    args = _parse_args()
+
     conn = sqlite3.connect(SQLITE_DB)
 
     df = _consolidate_files("data")
-    df.to_sql("observations", conn, if_exists="replace")
 
-    stations = unique_stations(df)
-    stations.to_sql("stations", conn, if_exists="replace")
+    if "observations" in args.tables:
+        print("Writing `observations` table")
+        df.to_sql("observations", conn, if_exists="replace")
 
-    station_dists = distance_between_stations(stations)
-    station_dists.to_sql("station_distances", conn, if_exists="replace")
+    if "stations" in args.tables:
+        print("writing `stations` table")
+        stations = unique_stations(df)
+        stations.to_sql("stations", conn, if_exists="replace")
+
+    if "station_distances" in args.tables:
+        print("Writing `station_distances` table")
+        station_dists = distance_between_stations(stations)
+        station_dists.to_sql("station_distances", conn, if_exists="replace")
