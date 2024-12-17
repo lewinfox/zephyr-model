@@ -2,6 +2,15 @@
 
 Predictive model for [zephyrapp.nz](https://zephyrapp.nz).
 
+## Setup
+
+* Clone repo
+* Create conda env `conda create -n zephyr-model python=3.12`
+* `conda activate zephyr-model`
+* Set VSCode to use `zephyr-model` environment
+* `python -m pip install -r requirements.txt`
+* `conda env config vars set ZEPHYR_DATASTORE_KEY="my-datastore-key"`
+
 ## Data download
 
 * Set `ZEPHYR_DATASTORE_KEY` env var
