@@ -77,34 +77,46 @@ def distance_between_stations(stations: pd.DataFrame) -> pd.DataFrame:
     return res
 
 
-def _consolidate_files(data_dir: str = "data") -> pd.DataFrame:
+def _consolidate_files(data_dir: str = "data", batch_size=1_000):
     """
     Consolidate all JSON files in `data_dir` into a single `DataFrame`
     """
     data = []
-    for root, dirs, files in os.walk(data_dir):
-        for f in files:
-            with open(os.path.join(root, f), "r") as fi:
-                print(f"Reading {f}")
-                data.extend(json.load(fi))
+    counter = 0
+    conn = sqlite3.connect(SQLITE_DB)
 
     print("Compiling data")
 
-    df = pd.json_normalize(data, sep="_")
-    return df
+    for root, dirs, files in os.walk(data_dir):
+        for f in files:
+            counter += 1
+            with open(os.path.join(root, f), "r") as fi:
+                print(f"Reading {f}")
+                data.extend(json.load(fi))
+                if counter == batch_size:
+                    # Create a dataframe and dump it to disk
+                    pd.json_normalize(data, sep="_").to_sql(
+                        "observations", conn, if_exists="append"
+                    )
+                    print("Wrote batch to db")
+                    data = []
+                    counter = 0
+
+    if len(data) > 0:
+        pd.json_normalize(data, sep="_").to_sql(
+            "observations", conn, if_exists="append"
+        )
 
 
 if __name__ == "__main__":
 
     args = _parse_args()
 
+    # _consolidate_files("data")
+
     conn = sqlite3.connect(SQLITE_DB)
 
-    df = _consolidate_files("data")
-
-    if "observations" in args.tables:
-        print("Writing `observations` table")
-        df.to_sql("observations", conn, if_exists="replace")
+    df = pd.read_sql("select * from observations", conn)
 
     if "stations" in args.tables:
         print("writing `stations` table")
