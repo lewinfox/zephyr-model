@@ -33,6 +33,7 @@ def _parse_date(x: int | str | datetime.datetime | None) -> int | None:
                 ts = datetime.datetime.strptime(x, fmt)
                 return int(ts.timestamp())
             except Exception as e:
+                print(e)
                 continue
 
     raise ValueError(f"Unable to interpret {x} as a timestamp")
@@ -120,11 +121,10 @@ async def _get_data(
             for url, filename in zip(download_paths, filenames)
         ]
 
-        result = await asyncio.gather(*tasks)
+        _ = await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":
-
     if len(sys.argv) == 2:
         from_date = sys.argv[1]
     else:

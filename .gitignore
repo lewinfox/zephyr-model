@@ -3,3 +3,6 @@ data/
 
 # sqlite database used in development
 *.db
+
+# dotenv file containing secrets
+.env

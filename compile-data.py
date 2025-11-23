@@ -109,7 +109,6 @@ def _consolidate_files(data_dir: str = "data", batch_size=1_000):
 
 
 if __name__ == "__main__":
-
     args = _parse_args()
 
     # _consolidate_files("data")
