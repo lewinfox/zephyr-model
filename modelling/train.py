@@ -51,13 +51,65 @@ class TrainingResult:
     training_history: Dict[str, list]
 
 
-def prepare_data(df: pd.DataFrame, features: list[str] = None) -> pd.DataFrame:
+def extract_temporal_features(df: pd.DataFrame, timestamp_col: str = "timestamp") -> pd.DataFrame:
+    """
+    Extract cyclical temporal features from timestamp column.
+
+    This function creates sin/cos encoded features for:
+    - Time of day (24-hour cycle)
+    - Day of year (seasonal patterns)
+    - Day of week (weekly patterns)
+
+    Args:
+        df: DataFrame with timestamp column
+        timestamp_col: Name of timestamp column
+
+    Returns:
+        DataFrame with added temporal features
+    """
+    df = df.copy()
+
+    # Convert timestamp to datetime if needed
+    if not pd.api.types.is_datetime64_any_dtype(df[timestamp_col]):
+        df[timestamp_col] = pd.to_datetime(df[timestamp_col], unit='s')
+
+    dt = df[timestamp_col]
+
+    # Time of day features (cyclical encoding)
+    hour_of_day = dt.dt.hour + dt.dt.minute / 60
+    df["hour_sin"] = np.sin(2 * np.pi * hour_of_day / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * hour_of_day / 24)
+
+    # Day of year features (cyclical encoding for seasonality)
+    day_of_year = dt.dt.dayofyear
+    df["day_sin"] = np.sin(2 * np.pi * day_of_year / 365.25)
+    df["day_cos"] = np.cos(2 * np.pi * day_of_year / 365.25)
+
+    # Day of week features (cyclical encoding for weekly patterns)
+    day_of_week = dt.dt.dayofweek
+    df["weekday_sin"] = np.sin(2 * np.pi * day_of_week / 7)
+    df["weekday_cos"] = np.cos(2 * np.pi * day_of_week / 7)
+
+    return df
+
+
+def get_temporal_feature_names() -> list[str]:
+    """Get list of temporal feature column names."""
+    return [
+        "hour_sin", "hour_cos",
+        "day_sin", "day_cos",
+        "weekday_sin", "weekday_cos"
+    ]
+
+
+def prepare_data(df: pd.DataFrame, features: list[str] = None, include_temporal: bool = True) -> pd.DataFrame:
     """
     Prepare multi-station time series data for training.
 
     Args:
         df: Input dataframe with columns ['id', 'timestamp', ...features]
         features: List of feature column names to use
+        include_temporal: Whether to extract temporal features from timestamp
 
     Returns:
         Cleaned and sorted dataframe ready for windowing
@@ -67,6 +119,10 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None) -> pd.DataFrame:
 
     # Sort by station ID and timestamp
     df_sorted = df.sort_values(["id", "timestamp"]).reset_index(drop=True)
+
+    # Extract temporal features from timestamp
+    if include_temporal:
+        df_sorted = extract_temporal_features(df_sorted)
 
     # Handle missing values per station group
     # Forward fill then backward fill within each station
@@ -81,6 +137,8 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None) -> pd.DataFrame:
     print(f"  - Total stations: {df_sorted['id'].nunique()}")
     print(f"  - Total rows: {len(df_sorted)}")
     print(f"  - Missing values: {df_sorted[features].isnull().sum().sum()}")
+    if include_temporal:
+        print(f"  - Temporal features added: {', '.join(get_temporal_feature_names())}")
 
     return df_sorted
 
@@ -131,6 +189,7 @@ def train_model(
     model_dir: str = "models",
     model_name: str = "weather_forecast",
     features: Optional[list[str]] = None,
+    include_temporal: bool = True,
     show_plot: bool = True,
 ) -> TrainingResult:
     """
@@ -142,6 +201,7 @@ def train_model(
         model_dir: Directory to save model
         model_name: Base name for saved model file
         features: Feature columns to use (defaults to weather variables)
+        include_temporal: Whether to include temporal features from timestamp
         show_plot: Whether to show training plot
 
     Returns:
@@ -161,11 +221,13 @@ def train_model(
 
     # Step 1: Prepare data
     print("\n[1/5] Preparing data...")
-    df_clean = prepare_data(df, features)
+    df_clean = prepare_data(df, features, include_temporal=include_temporal)
 
     # Step 2: Create sliding windows
     print("\n[2/5] Creating sliding windows...")
-    X, y = create_windows(df_clean, config.window_len, config.horizon, features)
+    # Include temporal features in training if enabled
+    all_features = features + get_temporal_feature_names() if include_temporal else features
+    X, y = create_windows(df_clean, config.window_len, config.horizon, all_features)
 
     # Step 3: Create train/validation split
     print("\n[3/5] Creating train/validation split...")
@@ -257,12 +319,9 @@ def train_model(
 
 def main():
     """Example usage."""
-    import sys
 
     # Load data
-    data_path = "data.csv"
-    if len(sys.argv) > 1:
-        data_path = sys.argv[1]
+    data_path = "modelling/data.csv"
 
     print(f"Loading data from {data_path}...")
     df = pd.read_csv(data_path)
