@@ -44,34 +44,22 @@ Our data (`data.csv`) contains:
 
 Dataset size: ~600k rows with some missing values.
 
-### Modeling Approaches
+### Modeling Approach
 
-#### Option 1: Single Multivariate Model (Recommended)
+#### Robustness
+
+In the data, as in real life, stations may go offline, miss data, fail to report,
+etc. It would be good if the model was trained to be robust to missing data.
+
+#### Single Multivariate Model
 
 Train one model that predicts all 4 variables simultaneously:
 - **Input (X)**: Last N timesteps of all 4 variables (e.g., 60 timesteps = 10 hours)
 - **Output (y)**: Next 6-12 timesteps of all 4 variables (1-2 hours ahead)
 - **Advantage**: Captures inter-variable relationships (e.g., how wind affects temperature)
 
-#### Option 2: Separate Models per Variable
-
-Train 4 independent models:
-- One for temperature
-- One for wind_average
-- One for wind_gust
-- One for wind_bearing
-
-**Pros**: Simpler, easier to debug individual variables
-**Cons**: Doesn't capture cross-variable dependencies
-
-### Handling Multiple Stations
-
-Three approaches to consider:
-
-1. **Per-Station Models**: Train 19 separate models (one per station)
-2. **Station as Feature**: Use station ID as a categorical feature in a unified model
-3. **Primary Station**: Focus on the most important station for initial modeling
-4. **Aggregate**: Average readings across nearby stations for more robust signals
+We want to predict outputs for all stations (the `id` field) in the training
+data.
 
 ## Time Horizons
 
@@ -88,9 +76,7 @@ Start with these horizons and experiment with longer predictions to evaluate mod
 ```python
 # Load and prepare data
 - Load CSV into pandas
-- Handle missing values (forward fill, interpolation, or masking)
-- Filter to single station or aggregate stations
-- Optional: Create temporal features (hour of day, day of week, season)
+- Create temporal features (hour of day, day of week, season)
 - Normalize/standardize the data
 ```
 
@@ -156,7 +142,6 @@ fcst.export("weather_forecast.pkl")
 ### Missing Values
 
 - tsai has built-in support for handling missing data
-- Can use forward fill or interpolation in preprocessing
 - Some models can handle NaN values directly with masking
 
 ### Multiple Variables with Different Scales
