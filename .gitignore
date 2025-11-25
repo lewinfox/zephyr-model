@@ -6,3 +6,4 @@ data/
 
 # dotenv file containing secrets
 .env
+*.csv
