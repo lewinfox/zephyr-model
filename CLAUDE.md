@@ -567,9 +567,248 @@ fcst = load_learner("models/weather_forecast_multi_station.pkl")
 
 ---
 
+## Cloud Deployment with GPU
+
+### Docker Setup
+
+The project includes GPU-enabled Docker configuration for cloud training:
+
+**Files**:
+- `Dockerfile` - GPU-enabled PyTorch image with CUDA 12.4
+- `docker-compose.yml` - Local testing and development
+- `.dockerignore` - Excludes unnecessary files from container
+- `requirements-train.txt` - Training-specific dependencies
+
+### Building and Running Locally
+
+**Prerequisites**:
+- Docker installed
+- NVIDIA Docker runtime (for GPU support)
+- NVIDIA GPU with CUDA support
+
+**Build the image**:
+```bash
+docker build -t zephyr-model:latest .
+```
+
+**Run training**:
+```bash
+docker-compose up train
+```
+
+**Run Jupyter notebook** (for interactive development):
+```bash
+docker-compose up notebook
+# Access at http://localhost:8888
+```
+
+**Custom training command**:
+```bash
+docker run --gpus all \
+  -v $(pwd)/modelling/data.csv:/workspace/modelling/data.csv:ro \
+  -v $(pwd)/models:/workspace/models \
+  zephyr-model:latest \
+  python modelling/train.py
+```
+
+### Cloud Platform Options
+
+#### 1. **AWS SageMaker** (Recommended for production)
+
+**Pros**:
+- Managed infrastructure
+- Built-in experiment tracking
+- Easy model deployment
+- Spot instance support for cost savings
+
+**Setup**:
+```bash
+# Push Docker image to ECR
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <account>.dkr.ecr.us-east-1.amazonaws.com
+docker tag zephyr-model:latest <account>.dkr.ecr.us-east-1.amazonaws.com/zephyr-model:latest
+docker push <account>.dkr.ecr.us-east-1.amazonaws.com/zephyr-model:latest
+
+# Create training job via SageMaker SDK
+```
+
+**Cost estimate**: ~$0.50-2.00/hour for ml.g4dn.xlarge (1 GPU)
+
+#### 2. **Google Cloud Vertex AI**
+
+**Pros**:
+- Integrated with Google Cloud Storage
+- Good for TPU workloads
+- Auto-scaling options
+
+**Setup**:
+```bash
+# Push to Google Container Registry
+gcloud auth configure-docker
+docker tag zephyr-model:latest gcr.io/<project-id>/zephyr-model:latest
+docker push gcr.io/<project-id>/zephyr-model:latest
+
+# Submit training job
+gcloud ai custom-jobs create \
+  --region=us-central1 \
+  --display-name=zephyr-training \
+  --worker-pool-spec=machine-type=n1-standard-4,accelerator-type=NVIDIA_TESLA_T4,accelerator-count=1,container-image-uri=gcr.io/<project-id>/zephyr-model:latest
+```
+
+**Cost estimate**: ~$0.35-1.50/hour for n1-standard-4 with T4 GPU
+
+#### 3. **Azure Machine Learning**
+
+**Pros**:
+- Good integration with Azure services
+- Strong enterprise support
+- Hybrid cloud options
+
+**Setup**:
+```bash
+# Push to Azure Container Registry
+az acr login --name <registry-name>
+docker tag zephyr-model:latest <registry-name>.azurecr.io/zephyr-model:latest
+docker push <registry-name>.azurecr.io/zephyr-model:latest
+
+# Create training job via Azure ML SDK
+```
+
+**Cost estimate**: ~$0.50-2.00/hour for NC6 (1 K80 GPU)
+
+#### 4. **Lambda Labs** (Recommended for budget)
+
+**Pros**:
+- Very cost-effective (~$0.50/hour for A100)
+- Simple pricing
+- No commitment required
+
+**Cons**:
+- Less managed (raw VM access)
+- Limited availability during high demand
+
+**Setup**:
+```bash
+# SSH into Lambda instance
+ssh ubuntu@<instance-ip>
+
+# Clone repo and run docker
+git clone <repo-url>
+cd zephyr-model
+docker-compose up train
+```
+
+**Cost estimate**: ~$0.50-1.10/hour for RTX 6000 Ada / A100
+
+#### 5. **Vast.ai** (Cheapest option)
+
+**Pros**:
+- Extremely cost-effective (~$0.10-0.30/hour)
+- On-demand GPU marketplace
+- Docker-native
+
+**Cons**:
+- Variable reliability
+- Community-hosted GPUs
+- May have interruptions
+
+**Setup**: Use the web interface to deploy your Docker image
+
+**Cost estimate**: ~$0.10-0.30/hour for RTX 3090 / RTX 4090
+
+### Recommended Workflow
+
+**Development**:
+1. Use `docker-compose` locally for testing (if you have a GPU)
+2. Or use Vast.ai for cheap experimentation
+
+**Production Training**:
+1. Use AWS SageMaker or Lambda Labs
+2. Enable experiment tracking (W&B or MLflow)
+3. Save models to cloud storage (S3, GCS)
+4. Set up automated retraining pipeline
+
+### Data Transfer Strategy
+
+For cloud training, you'll need to transfer your data:
+
+**Option 1: Include in Docker image** (for small datasets < 100MB)
+```dockerfile
+COPY modelling/data.csv /workspace/modelling/data.csv
+```
+
+**Option 2: Download from cloud storage** (recommended for large datasets)
+```bash
+# In Docker entrypoint or training script
+aws s3 cp s3://zephyr-data/data.csv /workspace/modelling/data.csv
+```
+
+**Option 3: Mount cloud storage** (for very large datasets)
+- AWS: S3FS or EFS
+- GCP: Cloud Storage FUSE
+- Azure: Blob FUSE
+
+### GPU Optimization Tips
+
+**Check GPU availability in container**:
+```python
+import torch
+print(f"CUDA available: {torch.cuda.is_available()}")
+print(f"GPU count: {torch.cuda.device_count()}")
+print(f"GPU name: {torch.cuda.get_device_name(0)}")
+```
+
+**Increase batch size**: With GPU, you can increase from 128 to 512 or 1024
+
+**Mixed precision training** (for faster training):
+```python
+# Add to train.py
+from fastai.callback.fp16 import MixedPrecision
+fcst = TSForecaster(..., cbs=[MixedPrecision()])
+```
+
+**Multi-GPU training**:
+```python
+# Modify docker-compose.yml to use all GPUs
+devices:
+  - driver: nvidia
+    count: all  # Use all available GPUs
+    capabilities: [gpu]
+```
+
+### Estimated Training Times
+
+Based on current dataset (600k rows, 19 stations):
+
+| GPU | Batch Size | Epochs | Est. Time | Cost (Lambda) |
+|-----|------------|--------|-----------|---------------|
+| CPU (laptop) | 128 | 20 | ~8 hours | - |
+| T4 | 512 | 20 | ~30 min | ~$0.25 |
+| RTX 6000 Ada | 1024 | 20 | ~15 min | ~$0.13 |
+| A100 | 2048 | 20 | ~10 min | ~$0.08 |
+
+### Continuous Training Pipeline
+
+**Automated workflow**:
+1. New data arrives from Zephyr API (daily/weekly)
+2. Trigger retraining via cloud scheduler
+3. Train model on GPU instance
+4. Evaluate against held-out test set
+5. If metrics improve, deploy new model
+6. Archive old model version
+
+**Implementation options**:
+- AWS: EventBridge + Lambda + SageMaker
+- GCP: Cloud Scheduler + Cloud Functions + Vertex AI
+- Airflow / Prefect for orchestration
+
+---
+
 ## Recent Updates
 
-- **2025-11-26**: Fixed timestamp parsing in `extract_temporal_features()` to correctly handle Unix timestamps in seconds (added `unit='s'` parameter to `pd.to_datetime()`)
+- **2025-11-26**:
+  - Fixed timestamp parsing in `extract_temporal_features()` to correctly handle Unix timestamps in seconds
+  - Added Docker configuration for GPU-enabled cloud training
+  - Created comprehensive cloud deployment documentation
 - **Recent commits**: Added training script, cleaned up repository, added UV package manager and Makefile
 
 ---

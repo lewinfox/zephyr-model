@@ -1,0 +1,56 @@
+# Terraform configuration for Zephyr training instance
+# Copy this file to terraform.tfvars and customize for your setup
+
+# AWS Configuration
+aws_region  = "us-east-1"
+environment = "dev"
+
+# Instance Configuration
+instance_type      = "g4dn.xlarge" # T4 GPU, 16GB RAM, 4 vCPUs
+use_spot_instance  = true          # Use spot instances for cost savings (~70% cheaper)
+spot_max_price     = "0.30"        # Max price for spot (g4dn.xlarge spot ~$0.16/hr)
+ebs_volume_size    = 100           # GB
+
+# SSH Configuration
+key_pair_name    = "zephyr-training-key"
+public_key_path  = "~/.ssh/id_rsa.pub" # Path to your SSH public key
+
+# IMPORTANT: Change this to your IP address for security
+# Get your IP: curl https://checkip.amazonaws.com
+allowed_ssh_cidrs = ["0.0.0.0/0"] # WARNING: Open to all. Change to ["YOUR_IP/32"]
+
+# Jupyter Notebook (optional)
+enable_jupyter = false # Set to true to access Jupyter on port 8888
+
+# S3 Configuration (optional but recommended)
+s3_bucket   = "" # e.g., "your-zephyr-bucket"
+s3_data_key = "zephyr-training/data.csv"
+
+# Git Repository (optional)
+git_repo_url = "" # e.g., "https://github.com/yourusername/zephyr-model.git"
+
+# Automation
+enable_user_data     = true  # Run setup script on launch
+auto_start_training  = false # Set to true to automatically start training on launch
+
+# Networking
+allocate_elastic_ip = false # Set to true for persistent IP address (small cost)
+
+# ====================================================================
+# Common Configurations
+# ====================================================================
+
+# Budget Option: Cheapest GPU training
+# instance_type = "g4dn.xlarge"
+# use_spot_instance = true
+# spot_max_price = "0.20"
+
+# Performance Option: Faster training
+# instance_type = "g5.xlarge"
+# use_spot_instance = true
+# spot_max_price = "0.40"
+
+# Production Option: Reliable training
+# instance_type = "g4dn.xlarge"
+# use_spot_instance = false
+# allocate_elastic_ip = true
