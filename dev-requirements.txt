@@ -1,7 +1,0 @@
--r requirements.txt
-pandas
-requests
-asyncio
-aiohttp
-mypy
-ipykernel

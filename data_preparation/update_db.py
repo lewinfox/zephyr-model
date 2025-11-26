@@ -12,7 +12,6 @@ import asyncio
 import datetime
 import json
 import os
-import re
 import shutil
 import sqlite3
 import tempfile
@@ -202,9 +201,9 @@ def get_download_urls(
 
     params = {"key": ZEPHYR_DATASTORE_KEY}
     if from_date is not None:
-        params["dateFrom"] = from_date
+        params["dateFrom"] = from_date  # type: ignore
     if to_date is not None:
-        params["dateTo"] = to_date
+        params["dateTo"] = to_date  # type: ignore
 
     print(f"Requesting data from API (from_date={from_date}, to_date={to_date})")
     res = requests.get(ZEPHYR_DATASTORE_URL, params=params)
@@ -264,8 +263,7 @@ async def download_new_data(
     temp_dir = tempfile.mkdtemp(prefix="zephyr_download_")
     print(f"Downloading to temporary directory: {temp_dir}")
 
-    filename_regex = re.compile(r"zephyr-scrape-[0-9]{10}.json")
-    filenames = [filename_regex.search(p).group() for p in download_paths]
+    filenames = [os.path.basename(p) for p in download_paths]
 
     downloaded_files = []
 
@@ -439,7 +437,9 @@ def update_station_distances(conn: sqlite3.Connection):
         print("No new station distances to compute")
         return
 
-    print(f"Computing {len(new_pairs)} unique distances ({len(new_pairs) * 2} directional pairs)")
+    print(
+        f"Computing {len(new_pairs)} unique distances ({len(new_pairs) * 2} directional pairs)"
+    )
 
     # Calculate distances and create both directional entries
     new_distances = []
@@ -448,23 +448,27 @@ def update_station_distances(conn: sqlite3.Connection):
         distance = haversine_distance(lat_from, lon_from, lat_to, lon_to)
 
         # Add both directions
-        new_distances.append({
-            "id_from": id_from,
-            "id_to": id_to,
-            "km_between": distance,
-        })
-        new_distances.append({
-            "id_from": id_to,
-            "id_to": id_from,
-            "km_between": distance,
-        })
+        new_distances.append(
+            {
+                "id_from": id_from,
+                "id_to": id_to,
+                "km_between": distance,
+            }
+        )
+        new_distances.append(
+            {
+                "id_from": id_to,
+                "id_to": id_from,
+                "km_between": distance,
+            }
+        )
 
     # Insert new distances using INSERT OR IGNORE to skip duplicates
     if new_distances:
         # Manually insert with INSERT OR IGNORE instead of pandas to_sql
         cursor.executemany(
             "INSERT OR IGNORE INTO station_distances (id_from, id_to, km_between) VALUES (?, ?, ?)",
-            [(d["id_from"], d["id_to"], d["km_between"]) for d in new_distances]
+            [(d["id_from"], d["id_to"], d["km_between"]) for d in new_distances],
         )
         rows_inserted = cursor.rowcount
         conn.commit()

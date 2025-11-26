@@ -6,4 +6,7 @@ data/
 
 # dotenv file containing secrets
 .env
+
+# Any data files we have kicking around
 *.csv
+*.parquet

@@ -4,12 +4,15 @@ Weather Forecasting Model Training Script
 Multi-station time series forecasting using tsai's PatchTST architecture.
 """
 
+import os
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
+from jinja2 import Template
 from tsai.all import (
     Nan2Value,
     ShowGraph,
@@ -20,6 +23,14 @@ from tsai.all import (
     mae,
     rmse,
 )
+
+import sql
+
+ZEPHYR_DATABASE = "zephyr-model.db"
+
+
+def db_connection():
+    return sqlite3.connect(ZEPHYR_DATABASE)
 
 
 @dataclass
@@ -56,7 +67,7 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None) -> pd.DataFrame:
     Prepare multi-station time series data for training.
 
     Args:
-        df: Input dataframe with columns ['id', 'timestamp', ...features]
+        df: Input dataframe with columns ['station_id', 'timestamp', ...features]
         features: List of feature column names to use
 
     Returns:
@@ -66,11 +77,11 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None) -> pd.DataFrame:
         features = ["temperature", "wind_average", "wind_gust", "wind_bearing"]
 
     # Sort by station ID and timestamp
-    df_sorted = df.sort_values(["id", "timestamp"]).reset_index(drop=True)
+    df_sorted = df.sort_values(["station_id", "timestamp"]).reset_index(drop=True)
 
     # Handle missing values per station group
     # Forward fill then backward fill within each station
-    df_sorted[features] = df_sorted.groupby("id")[features].transform(
+    df_sorted[features] = df_sorted.groupby("station_id")[features].transform(
         lambda x: x.ffill().bfill()
     )
 
@@ -78,7 +89,7 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None) -> pd.DataFrame:
     df_sorted = df_sorted.dropna(subset=features)
 
     print("Data preparation complete:")
-    print(f"  - Total stations: {df_sorted['id'].nunique()}")
+    print(f"  - Total stations: {df_sorted['station_id'].nunique()}")
     print(f"  - Total rows: {len(df_sorted)}")
     print(f"  - Missing values: {df_sorted[features].isnull().sum().sum()}")
 
@@ -107,7 +118,7 @@ def create_windows(
     X, y = SlidingWindowPanel(
         window_len=window_len,
         horizon=horizon,
-        unique_id_cols=["id"],
+        unique_id_cols=["station_id"],
         get_x=features,
         get_y=features,
         sort_by="timestamp",
@@ -125,6 +136,26 @@ def create_windows(
     return X, y
 
 
+def get_training_sql(station_name: str, max_distance: float) -> str:
+    """
+    Return a SQL query to obtain all observations from stations within `max_distance` of `station_name`.
+    """
+    with open(os.path.join(sql.PACKAGE_PATH, "get_training_data.sql")) as f:
+        t = f.read()
+    template = Template(t)
+    query = template.render(station_name=station_name, max_distance=max_distance)
+    return query
+
+
+def get_training_data(station_name: str, max_distance: float) -> pd.DataFrame:
+    """Retrieve a DataFrame of all observations within a certain radius of a station"""
+
+    sql = get_training_sql(station_name=station_name, max_distance=max_distance)
+    with db_connection() as conn:
+        df = pd.read_sql(sql, conn)
+    return df
+
+
 def train_model(
     df: pd.DataFrame,
     config: Optional[TrainingConfig] = None,
@@ -137,7 +168,7 @@ def train_model(
     Train a multi-station weather forecasting model.
 
     Args:
-        df: Input dataframe with columns ['id', 'timestamp'] + features
+        df: Input dataframe with columns ['station_id', 'timestamp'] + features
         config: Training configuration (uses defaults if None)
         model_dir: Directory to save model
         model_name: Base name for saved model file
@@ -247,7 +278,7 @@ def train_model(
         total_samples=len(X),
         train_samples=len(splits[0]),
         valid_samples=len(splits[1]),
-        num_stations=df_clean["id"].nunique(),
+        num_stations=df_clean["station_id"].nunique(),
         final_train_loss=float(train_loss),
         final_valid_loss=float(valid_loss),
         mae_per_variable=mae_dict,
@@ -257,15 +288,8 @@ def train_model(
 
 def main():
     """Example usage."""
-    import sys
 
-    # Load data
-    data_path = "data.csv"
-    if len(sys.argv) > 1:
-        data_path = sys.argv[1]
-
-    print(f"Loading data from {data_path}...")
-    df = pd.read_csv(data_path)
+    df = get_training_data("Coronet Tandems", 20)
 
     # Configure training
     config = TrainingConfig(window_len=60, horizon=6, n_epochs=20, batch_size=128)
