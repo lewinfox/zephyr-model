@@ -13,18 +13,74 @@ import datetime
 import json
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 from math import atan2, cos, radians, sin, sqrt
-from pathlib import Path
+from typing import Optional
 
 import aiohttp
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, field_validator
 
 # Configuration
 SQLITE_DB = "zephyr-model.db"
 ZEPHYR_DATASTORE_KEY = os.environ.get("ZEPHYR_DATASTORE_KEY")
 ZEPHYR_DATASTORE_URL = "https://api.zephyrapp.nz/v1/json-output"
+
+
+class Wind(BaseModel):
+    average: Optional[float] = None
+    gust: Optional[float] = None
+    bearing: Optional[float] = None
+
+    @field_validator("average", "gust", "bearing", mode="before")
+    @classmethod
+    def parse_float_or_none(cls, v):
+        """Convert to float, or None if not parseable."""
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+
+
+class Observation(BaseModel):
+    station_id: str
+    timestamp: int
+    temperature: Optional[float] = None
+    wind: Wind
+
+    @field_validator("temperature", mode="before")
+    @classmethod
+    def parse_float_or_none(cls, v):
+        """Convert to float, or None if not parseable."""
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+
+
+class Coordinates(BaseModel):
+    lat: float
+    lon: float
+
+    model_config = ConfigDict(frozen=True)  # Make it hashable
+
+
+class Station(BaseModel):
+    id: str
+    name: str
+    type: str
+    coordinates: Coordinates
+    elevation: Optional[float] = None
+
+    model_config = ConfigDict(frozen=True)  # Make it hashable
+
+
+class StationDistance(BaseModel):
+    id_from: str
+    id_to: str
+    km_between: float
 
 
 def get_db_connection():
@@ -41,23 +97,10 @@ def initialize_database(conn: sqlite3.Connection):
     cursor = conn.cursor()
 
     # Create observations table with appropriate schema
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS observations (
-            id TEXT,
-            name TEXT,
-            lastUpdate_seconds INTEGER,
-            isError INTEGER,
-            isOffline INTEGER,
-            coordinates_lat REAL,
-            coordinates_lon REAL,
-            elevation REAL,
-            currentAverage REAL,
-            currentGust REAL,
-            currentBearing REAL,
-            currentTemperature REAL,
-            timestamp INTEGER
-        )
-    """)
+    with open(os.path.join(os.path.dirname(__file__), "sql", "observations.sql")) as f:
+        sql = f.read()
+
+    cursor.execute(sql)
 
     # Create index on timestamp for efficient querying
     cursor.execute("""
@@ -67,29 +110,23 @@ def initialize_database(conn: sqlite3.Connection):
 
     # Create index on station id for efficient joins
     cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_observations_id
-        ON observations(id)
+        CREATE INDEX IF NOT EXISTS idx_observations_station_id
+        ON observations(station_id)
     """)
 
     # Create stations table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS stations (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            coordinates_lat REAL,
-            coordinates_lon REAL
-        )
-    """)
+    with open(os.path.join(os.path.dirname(__file__), "sql", "stations.sql")) as f:
+        sql = f.read()
+
+    cursor.execute(sql)
 
     # Create station_distances table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS station_distances (
-            id_from TEXT,
-            id_to TEXT,
-            km_between REAL,
-            PRIMARY KEY (id_from, id_to)
-        )
-    """)
+    with open(
+        os.path.join(os.path.dirname(__file__), "sql", "station_distances.sql")
+    ) as f:
+        sql = f.read()
+
+    cursor.execute(sql)
 
     conn.commit()
     print("Database schema initialized")
@@ -107,7 +144,9 @@ def get_latest_timestamp(conn: sqlite3.Connection) -> int | None:
     result = cursor.fetchone()[0]
 
     if result is not None:
-        print(f"Most recent observation: {datetime.datetime.fromtimestamp(result)} (timestamp: {result})")
+        print(
+            f"Most recent observation: {datetime.datetime.fromtimestamp(result)} (timestamp: {result})"
+        )
     else:
         print("No existing observations found")
 
@@ -177,7 +216,9 @@ def get_download_urls(
     return urls
 
 
-async def download_file(session: aiohttp.ClientSession, url: str, output_file: str) -> str:
+async def download_file(
+    session: aiohttp.ClientSession, url: str, output_file: str
+) -> str:
     """
     Download a file from URL to output_file.
 
@@ -201,7 +242,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, output_file: s
 async def download_new_data(
     from_date: int | str | datetime.datetime | None = None,
     to_date: int | str | datetime.datetime | None = None,
-) -> list[str]:
+) -> str | None:
     """
     Download new data files from the Zephyr API.
 
@@ -210,13 +251,14 @@ async def download_new_data(
         to_date: Optional end date
 
     Returns:
-        list[str]: List of paths to downloaded files
+        str: Path to the temporary directory containing the downloaded files. If
+        no new files are available, returns `None`.
     """
     download_paths = [x["url"] for x in get_download_urls(from_date, to_date)]
 
     if not download_paths:
         print("No new data to download")
-        return []
+        return None
 
     # Create temporary directory for downloads
     temp_dir = tempfile.mkdtemp(prefix="zephyr_download_")
@@ -236,63 +278,70 @@ async def download_new_data(
         downloaded_files = await asyncio.gather(*tasks)
         print(f"Downloaded {len(downloaded_files)} files")
 
-    return downloaded_files
+    return temp_dir
 
 
-def extract_timestamp_from_filename(filename: str) -> int:
-    """
-    Extract Unix timestamp from a Zephyr filename.
-
-    Args:
-        filename: Filename in format 'zephyr-scrape-{timestamp}.json'
-
-    Returns:
-        int: Unix timestamp
-    """
-    match = re.search(r"zephyr-scrape-(\d{10}).json", filename)
-    if match:
-        return int(match.group(1))
-    raise ValueError(f"Could not extract timestamp from filename: {filename}")
-
-
-def process_observations(files: list[str], conn: sqlite3.Connection, batch_size: int = 1000):
+def process_observations(
+    source_file_dir: str, conn: sqlite3.Connection, batch_size: int = 1000
+) -> set[Station]:
     """
     Process downloaded JSON files and insert observations into the database.
 
     Args:
-        files: List of paths to JSON files
+        source_file_dir: Directory containing downloaded files
         conn: Database connection
         batch_size: Number of records to insert at once
+
+    Return:
+        set[Station]: Set of all the unique stations found in the data
     """
+
+    files = os.listdir(source_file_dir)
+
     if not files:
         print("No files to process")
-        return
+        return set()
 
     print(f"Processing {len(files)} files")
+
     data_batch = []
     total_records = 0
+    stations: set[Station] = set()
 
     for file_path in files:
-        filename = os.path.basename(file_path)
-        file_timestamp = extract_timestamp_from_filename(filename)
-
-        with open(file_path, "r") as f:
+        with open(os.path.join(source_file_dir, file_path), "r") as f:
             observations = json.load(f)
 
-        # Add timestamp to each observation
-        for obs in observations:
-            obs["timestamp"] = file_timestamp
+        # Validate records
+        validated_records: list[dict] = []
 
-        # Normalize and batch
-        df = pd.json_normalize(observations, sep="_")
-        data_batch.append(df)
+        for idx, row in enumerate(observations):
+            try:
+                station = Station(**row)
+                stations.add(station)
+
+                # We want to rename `id` to `station_id` in the observations table
+                if "id" in row:
+                    row["station_id"] = row.pop("id")
+
+                validated_obs = Observation(**row)
+                validated_records.append(validated_obs.model_dump())
+            except Exception as e:
+                print(f"ERROR: {e}\n{row}")
+                raise e
+
+        if validated_records:
+            validated_df = pd.json_normalize(validated_records, sep="_")
+            data_batch.append(validated_df)
 
         if len(data_batch) >= batch_size:
             # Concatenate and write batch
             batch_df = pd.concat(data_batch, ignore_index=True)
             batch_df.to_sql("observations", conn, if_exists="append", index=False)
             total_records += len(batch_df)
-            print(f"Inserted batch of {len(batch_df)} observations (total: {total_records})")
+            print(
+                f"Inserted batch of {len(batch_df)} observations (total: {total_records})"
+            )
             data_batch = []
 
     # Insert remaining data
@@ -300,10 +349,14 @@ def process_observations(files: list[str], conn: sqlite3.Connection, batch_size:
         batch_df = pd.concat(data_batch, ignore_index=True)
         batch_df.to_sql("observations", conn, if_exists="append", index=False)
         total_records += len(batch_df)
-        print(f"Inserted final batch of {len(batch_df)} observations (total: {total_records})")
+        print(
+            f"Inserted final batch of {len(batch_df)} observations (total: {total_records})"
+        )
 
     conn.commit()
     print(f"Successfully processed {total_records} total observations")
+
+    return stations
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -328,32 +381,23 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     return distance
 
 
-def update_stations(conn: sqlite3.Connection):
+def update_stations(conn: sqlite3.Connection, stations: set[Station]) -> int:
     """
     Update the stations table with any new stations from observations.
 
     This identifies stations in the observations table that don't exist in the
     stations table and adds them.
     """
-    cursor = conn.cursor()
 
-    # Find new stations (those in observations but not in stations)
-    cursor.execute("""
-        INSERT OR IGNORE INTO stations (id, name, coordinates_lat, coordinates_lon)
-        SELECT DISTINCT id, name, coordinates_lat, coordinates_lon
-        FROM observations
-        WHERE id NOT IN (SELECT id FROM stations)
-    """)
-
-    new_stations = cursor.rowcount
-    conn.commit()
-
-    if new_stations > 0:
-        print(f"Added {new_stations} new stations")
-    else:
+    if len(stations) == 0:
         print("No new stations to add")
+        return 0
 
-    return new_stations
+    df = pd.json_normalize([s.model_dump() for s in stations], sep="_")
+
+    df.to_sql("stations", conn, if_exists="replace", index=False)
+
+    return len(df)
 
 
 def update_station_distances(conn: sqlite3.Connection):
@@ -361,75 +405,71 @@ def update_station_distances(conn: sqlite3.Connection):
     Update the station_distances table for any new station pairs.
 
     This computes distances only for station pairs that don't already exist in
-    the station_distances table.
+    the station_distances table. Each distance is computed once and inserted
+    as both (a,b) and (b,a).
     """
     cursor = conn.cursor()
 
-    # Get all stations
-    stations_df = pd.read_sql("SELECT * FROM stations", conn)
+    # Get all new station pairs that need distance calculations
+    # Use id_from < id_to to get each unique pair only once
+    query = """
+    SELECT
+        s1.id as id_from,
+        s1.coordinates_lat as lat_from,
+        s1.coordinates_lon as lon_from,
+        s2.id as id_to,
+        s2.coordinates_lat as lat_to,
+        s2.coordinates_lon as lon_to
+    FROM stations s1
+    CROSS JOIN stations s2
+    WHERE s1.id < s2.id  -- Only get each pair once (lexicographically)
+    AND NOT EXISTS (
+        -- Check if either direction already exists
+        SELECT 1
+        FROM station_distances sd
+        WHERE (sd.id_from = s1.id AND sd.id_to = s2.id)
+           OR (sd.id_from = s2.id AND sd.id_to = s1.id)
+    )
+    """
 
-    if len(stations_df) == 0:
-        print("No stations found")
-        return
+    cursor.execute(query)
+    new_pairs = cursor.fetchall()
 
-    # Get existing station pairs
-    existing_pairs = set()
-    cursor.execute("SELECT id_from, id_to FROM station_distances")
-    for row in cursor.fetchall():
-        existing_pairs.add((row[0], row[1]))
-
-    print(f"Found {len(existing_pairs)} existing station pairs")
-
-    # Compute distances for all pairs
-    new_distances = []
-    for i, station1 in stations_df.iterrows():
-        for j, station2 in stations_df.iterrows():
-            if i != j:  # Skip same station
-                pair = (station1["id"], station2["id"])
-                if pair not in existing_pairs:
-                    distance = haversine_distance(
-                        station1["coordinates_lat"],
-                        station1["coordinates_lon"],
-                        station2["coordinates_lat"],
-                        station2["coordinates_lon"],
-                    )
-                    new_distances.append({
-                        "id_from": station1["id"],
-                        "id_to": station2["id"],
-                        "km_between": distance,
-                    })
-
-    if new_distances:
-        distances_df = pd.DataFrame(new_distances)
-        distances_df.to_sql("station_distances", conn, if_exists="append", index=False)
-        conn.commit()
-        print(f"Added {len(new_distances)} new station distance pairs")
-    else:
+    if not new_pairs:
         print("No new station distances to compute")
-
-
-def cleanup_temp_files(files: list[str]):
-    """
-    Clean up temporary downloaded files.
-
-    Args:
-        files: List of file paths to delete
-    """
-    if not files:
         return
 
-    # Get the temporary directory from the first file
-    if files:
-        temp_dir = os.path.dirname(files[0])
-        try:
-            for file in files:
-                if os.path.exists(file):
-                    os.remove(file)
-            if os.path.exists(temp_dir):
-                os.rmdir(temp_dir)
-            print(f"Cleaned up temporary files from {temp_dir}")
-        except Exception as e:
-            print(f"Warning: Could not clean up temporary files: {e}")
+    print(f"Computing {len(new_pairs)} unique distances ({len(new_pairs) * 2} directional pairs)")
+
+    # Calculate distances and create both directional entries
+    new_distances = []
+    for row in new_pairs:
+        id_from, lat_from, lon_from, id_to, lat_to, lon_to = row
+        distance = haversine_distance(lat_from, lon_from, lat_to, lon_to)
+
+        # Add both directions
+        new_distances.append({
+            "id_from": id_from,
+            "id_to": id_to,
+            "km_between": distance,
+        })
+        new_distances.append({
+            "id_from": id_to,
+            "id_to": id_from,
+            "km_between": distance,
+        })
+
+    # Insert new distances using INSERT OR IGNORE to skip duplicates
+    if new_distances:
+        # Manually insert with INSERT OR IGNORE instead of pandas to_sql
+        cursor.executemany(
+            "INSERT OR IGNORE INTO station_distances (id_from, id_to, km_between) VALUES (?, ?, ?)",
+            [(d["id_from"], d["id_to"], d["km_between"]) for d in new_distances]
+        )
+        rows_inserted = cursor.rowcount
+        conn.commit()
+        print(f"Added {rows_inserted} new station distance pairs")
+        print("No new station distances to compute")
 
 
 async def incremental_update(
@@ -463,14 +503,16 @@ async def incremental_update(
     elif from_date is not None:
         from_date = parse_date(from_date)
         print(f"Using provided from_date: {from_date}")
+    elif to_date is None:
+        print("Downloading all available data")
     else:
-        print("Downloading all available data (no from_date specified)")
+        print(f"Downloading all data to {to_date}")
 
     # Download new data
     try:
-        downloaded_files = await download_new_data(from_date, to_date)
+        download_dir = await download_new_data(from_date, to_date)
 
-        if not downloaded_files:
+        if not download_dir:
             print("\nNo new data available. Database is up to date.")
             return
 
@@ -478,22 +520,26 @@ async def incremental_update(
         print("\n" + "=" * 60)
         print("Processing Observations")
         print("=" * 60)
-        process_observations(downloaded_files, conn)
+        stations = process_observations(download_dir, conn)
+
+        if len(stations) == 0:
+            return
 
         # Update stations table
         print("\n" + "=" * 60)
         print("Updating Stations")
         print("=" * 60)
-        new_stations = update_stations(conn)
+        new_stations = update_stations(conn, stations)
 
-        # Update station distances
-        print("\n" + "=" * 60)
-        print("Updating Station Distances")
-        print("=" * 60)
-        update_station_distances(conn)
+        # Update station distances if new stations were added
+        if new_stations > 0:
+            print("\n" + "=" * 60)
+            print("Updating Station Distances")
+            print("=" * 60)
+            update_station_distances(conn)
 
         # Clean up temporary files
-        cleanup_temp_files(downloaded_files)
+        shutil.rmtree(download_dir)
 
         print("\n" + "=" * 60)
         print("Update Complete!")
@@ -516,8 +562,7 @@ async def incremental_update(
         conn.close()
 
 
-def main():
-    """Main entry point for the script."""
+def parse_args():
     parser = argparse.ArgumentParser(
         description="Incrementally update Zephyr weather data database",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -531,7 +576,7 @@ Examples:
 
   # Download data for a specific date range
   python incremental_update.py --from-date 2024-01-01 --to-date 2024-01-31 --force
-        """
+        """,
     )
 
     parser.add_argument(
@@ -552,6 +597,14 @@ Examples:
 
     args = parser.parse_args()
 
+    return args
+
+
+def main():
+    """Main entry point for the script."""
+
+    args = parse_args()
+
     # Check for API key
     if not ZEPHYR_DATASTORE_KEY:
         print("Error: ZEPHYR_DATASTORE_KEY environment variable not set")
@@ -560,14 +613,16 @@ Examples:
         return 1
 
     # Run the incremental update
-    asyncio.run(incremental_update(
-        from_date=args.from_date,
-        to_date=args.to_date,
-        force_from_date=args.force,
-    ))
+    asyncio.run(
+        incremental_update(
+            from_date=args.from_date,
+            to_date=args.to_date,
+            force_from_date=args.force,
+        )
+    )
 
     return 0
 
 
 if __name__ == "__main__":
-    exit(main())
+    main()

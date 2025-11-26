@@ -8,10 +8,10 @@ The recommended way to update your data is using the incremental update script:
 
 ```bash
 # Set your API key
-export ZEPHYR_DATASTORE_KEY='e851c75c-fda5-489d-b42c-4db314ce11ab'
+export ZEPHYR_DATASTORE_KEY='XXX'
 
 # Run incremental update (automatically detects what data you need)
-python data_preparation/incremental_update.py
+python data_preparation/update_db.py
 ```
 
 This will:
@@ -21,7 +21,7 @@ This will:
 
 ## Scripts
 
-### `incremental_update.py` (Recommended)
+### `update_db.py`
 
 The main script for downloading and processing data incrementally.
 
@@ -36,13 +36,13 @@ The main script for downloading and processing data incrementally.
 
 ```bash
 # Automatic incremental update (recommended)
-python incremental_update.py
+python update_db.py
 
 # Force update from a specific date
-python incremental_update.py --from-date 2024-01-01 --force
+python update_db.py --from-date 2024-01-01 --force
 
 # Download data for a specific date range
-python incremental_update.py --from-date 2024-01-01 --to-date 2024-01-31 --force
+python update_db.py --from-date 2024-01-01 --to-date 2024-01-31 --force
 ```
 
 **Arguments:**
@@ -50,36 +50,24 @@ python incremental_update.py --from-date 2024-01-01 --to-date 2024-01-31 --force
 - `--to-date`: End date (same formats as above)
 - `--force`: Force using `--from-date` even if database has newer data
 
-### Legacy Scripts
-
-The following scripts are kept for reference but are superseded by `incremental_update.py`:
-
-- `get-data.py`: Downloads raw JSON files from the API
-- `compile-data.py`: Processes JSON files and builds database tables
-- `main.py`: Parses individual datapoint files
-
 ## Database Schema
 
-The script creates a SQLite database (`zephyr-model.db`) with three tables:
+The script creates a SQLite database (`zephyr-model.db`) with three tables,
+detailed below. A copy of the db is stored here `s3://lewinfox-zephyr/raw_data/zephyr-model.db`
+and should be downloaded and updated with `update_db.py` before training
+the model.
 
 ### `observations`
 Weather observations from all stations at different timestamps.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| id | TEXT | Station ID |
-| name | TEXT | Station name |
-| lastUpdate_seconds | INTEGER | Last update timestamp from station |
-| isError | INTEGER | Error flag (0 or 1) |
-| isOffline | INTEGER | Offline flag (0 or 1) |
-| coordinates_lat | REAL | Latitude |
-| coordinates_lon | REAL | Longitude |
-| elevation | REAL | Elevation in meters |
-| currentAverage | REAL | Average wind speed (km/h) |
-| currentGust | REAL | Wind gust speed (km/h) |
-| currentBearing | REAL | Wind direction |
-| currentTemperature | REAL | Temperature (Celsius) |
-| timestamp | INTEGER | Observation timestamp (from filename) |
+| id | TEXT | Station ID, FK to `stations` |
+| timestamp | INTEGER | UNIX timestamp (in seconds) of when the data was scraped by Zephyr. |
+| temperature | REAL | Celsius |
+| wind_average | REAL | kph |
+| wind_gust | REAL | kph |
+| wind_bearing | REAL | Compass direction |
 
 ### `stations`
 Unique weather stations.
@@ -88,8 +76,10 @@ Unique weather stations.
 |--------|------|-------------|
 | id | TEXT | Station ID (Primary Key) |
 | name | TEXT | Station name |
+| type | TEXT | Holfuy, Harvest etc. |
 | coordinates_lat | REAL | Latitude |
 | coordinates_lon | REAL | Longitude |
+| elevation | REAL | Elevation in metres, where known |
 
 ### `station_distances`
 Pairwise distances between all stations using the Haversine formula.

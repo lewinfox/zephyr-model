@@ -11,7 +11,8 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": [
-                "2024-01-01"
+                "--to-date",
+                "2024-04-08" // First day of data
             ]
         }
     ]
