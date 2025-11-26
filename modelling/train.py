@@ -150,7 +150,11 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None, include_temporal:
 
 
 def create_windows(
-    df: pd.DataFrame, window_len: int, horizon: int, features: list[str]
+    df: pd.DataFrame,
+    window_len: int,
+    horizon: int,
+    input_features: list[str],
+    output_features: list[str]
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Create sliding windows for multi-station time series.
@@ -159,7 +163,8 @@ def create_windows(
         df: Prepared dataframe
         window_len: Length of input window
         horizon: Prediction horizon
-        features: Feature columns
+        input_features: Feature columns to use as inputs (X)
+        output_features: Feature columns to predict as outputs (y)
 
     Returns:
         Tuple of (X, y) arrays
@@ -167,13 +172,15 @@ def create_windows(
     print("\nCreating sliding windows:")
     print(f"  - Window length: {window_len} timesteps")
     print(f"  - Horizon: {horizon} timesteps")
+    print(f"  - Input features: {len(input_features)} ({', '.join(input_features)})")
+    print(f"  - Output features: {len(output_features)} ({', '.join(output_features)})")
 
     X, y = SlidingWindowPanel(
         window_len=window_len,
         horizon=horizon,
         unique_id_cols=["station_id"],
-        get_x=features,
-        get_y=features,
+        get_x=input_features,
+        get_y=output_features,
         sort_by="timestamp",
     )(df)
 
@@ -251,9 +258,10 @@ def train_model(
 
     # Step 2: Create sliding windows
     print("\n[2/5] Creating sliding windows...")
-    # Include temporal features in training if enabled
-    all_features = features + get_temporal_feature_names() if include_temporal else features
-    X, y = create_windows(df_clean, config.window_len, config.horizon, all_features)
+    # Include temporal features in inputs only (not outputs)
+    input_features = features + get_temporal_feature_names() if include_temporal else features
+    output_features = features  # Only predict the actual weather variables
+    X, y = create_windows(df_clean, config.window_len, config.horizon, input_features, output_features)
 
     # Step 3: Create train/validation split
     print("\n[3/5] Creating train/validation split...")
@@ -295,10 +303,10 @@ def train_model(
     # Get validation predictions
     preds, targets = fcst.get_X_preds(X[splits[1]], y[splits[1]])
 
-    # Calculate MAE per variable
+    # Calculate MAE per variable (only for output features)
     mae_per_var = np.abs(preds - targets).mean(axis=(0, 1))
     mae_dict = {
-        feature: float(mae_val) for feature, mae_val in zip(all_features, mae_per_var)
+        feature: float(mae_val) for feature, mae_val in zip(output_features, mae_per_var)
     }
 
     print("\n  Validation MAE per variable:")
