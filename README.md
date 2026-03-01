@@ -5,55 +5,42 @@ Predictive model for [zephyrapp.nz](https://zephyrapp.nz).
 
 ## Setup
 
-* [Install conda](https://docs.anaconda.com/miniconda/install/)
+* [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
 * Clone repo
-* Create conda env `conda create -n zephyr-model python=3.12`
-* `conda activate zephyr-model`
-* `python -m pip install -r dev-requirements.txt`
-* `conda env config vars set ZEPHYR_DATASTORE_KEY="my-datastore-key"`\
-* Reactivate the environment to pick up the new env var: `conda activate zephyr-model`
-* Set VSCode to use `zephyr-model` conda environment (Google if unsure)
+* Run `uv sync`
+* Create a file `.env` containing `ZEPHYR_DATASTORE_KEY=<your key>`
 
 
 ## Data download
 
 * Set `ZEPHYR_DATASTORE_KEY` env var
-* Run `python get-data.py "<from date>"` e.g. `python get-data.py "2023-01-01"`.
+* Run `make update-db` or `uv run --env-file .env python data_preparation.py`
 
-This will download JSON files to `./data`.
-
-
-## Data prep
-
-Run `python compile-data.py`. This will create and populate a sqlite db
-containing `stations`, `observations` and `station_distances` tables.
-
-`station_distances` stores the distance in km between each pair of stations, so
-we can do things like "find all the stations within 10km of this one".
+This will download JSON files from the Zephyr API and populate a local SQLite
+database `zephyr-model.db`.
 
 ## Database schema
+
+### `observations`
+
+| station_id | timestamp    | temperature | wind_average | wind_gust | wind_bearing |
+|------------|--------------|-------------|--------------|-----------|--------------|
+| ab1234     | 1712440200   | 12.34       | 56.78        | 34.78     | 359.9        |
 
 ### `stations`
 
 Contains a unique list of all weather stations.
 
-``` sql
-select * from stations limit 1;
-```
 
-| index | id  | name         | coordinates_lat | coordinates_lon |
-|-------|-----|--------------|-----------------|-----------------|
-| 0     | 123 | Foo Bar Peak | -43.1           | 172.1           |
+| id  | name         | coordinates_lat | coordinates_lon |
+|-----|--------------|-----------------|-----------------|
+| 123 | Foo Bar Peak | -43.1           | 172.1           |
 
 
 ### `station_distances`
 
 Contains the distance (in km) between all stations. The `id_[from|to]` fields
-join to `stations.station_id`.
-
-``` sql
-select * from station_distances limit 1;
-```
+join to `stations.id`.
 
 | index | id_from | id_to   | km_between |
 |-------|---------|---------|------------|

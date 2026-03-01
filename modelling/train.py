@@ -4,12 +4,15 @@ Weather Forecasting Model Training Script
 Multi-station time series forecasting using tsai's PatchTST architecture.
 """
 
+import os
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
+from jinja2 import Template
 from tsai.all import (
     Nan2Value,
     ShowGraph,
@@ -20,6 +23,14 @@ from tsai.all import (
     mae,
     rmse,
 )
+
+import sql
+
+ZEPHYR_DATABASE = "zephyr-model.db"
+
+
+def db_connection():
+    return sqlite3.connect(ZEPHYR_DATABASE)
 
 
 @dataclass
@@ -71,7 +82,7 @@ def extract_temporal_features(df: pd.DataFrame, timestamp_col: str = "timestamp"
 
     # Convert timestamp to datetime if needed
     if not pd.api.types.is_datetime64_any_dtype(df[timestamp_col]):
-        df[timestamp_col] = pd.to_datetime(df[timestamp_col], unit='s')
+        df[timestamp_col] = pd.to_datetime(df[timestamp_col], unit="s")
 
     dt = df[timestamp_col]
 
@@ -107,7 +118,7 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None, include_temporal:
     Prepare multi-station time series data for training.
 
     Args:
-        df: Input dataframe with columns ['id', 'timestamp', ...features]
+        df: Input dataframe with columns ['station_id', 'timestamp', ...features]
         features: List of feature column names to use
         include_temporal: Whether to extract temporal features from timestamp
 
@@ -118,7 +129,11 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None, include_temporal:
         features = ["temperature", "wind_average", "wind_gust", "wind_bearing"]
 
     # Sort by station ID and timestamp
-    df_sorted = df.sort_values(["id", "timestamp"]).reset_index(drop=True)
+    df_sorted = df.sort_values(["station_id", "timestamp"]).reset_index(drop=True)
+
+    # Extract temporal features from timestamp
+    if include_temporal:
+        df_sorted = extract_temporal_features(df_sorted)
 
     # Extract temporal features from timestamp
     if include_temporal:
@@ -126,7 +141,7 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None, include_temporal:
 
     # Handle missing values per station group
     # Forward fill then backward fill within each station
-    df_sorted[features] = df_sorted.groupby("id")[features].transform(
+    df_sorted[features] = df_sorted.groupby("station_id")[features].transform(
         lambda x: x.ffill().bfill()
     )
 
@@ -134,7 +149,7 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None, include_temporal:
     df_sorted = df_sorted.dropna(subset=features)
 
     print("Data preparation complete:")
-    print(f"  - Total stations: {df_sorted['id'].nunique()}")
+    print(f"  - Total stations: {df_sorted['station_id'].nunique()}")
     print(f"  - Total rows: {len(df_sorted)}")
     print(f"  - Missing values: {df_sorted[features].isnull().sum().sum()}")
     if include_temporal:
@@ -144,7 +159,11 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None, include_temporal:
 
 
 def create_windows(
-    df: pd.DataFrame, window_len: int, horizon: int, features: list[str]
+    df: pd.DataFrame,
+    window_len: int,
+    horizon: int,
+    input_features: list[str],
+    output_features: list[str]
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Create sliding windows for multi-station time series.
@@ -153,7 +172,8 @@ def create_windows(
         df: Prepared dataframe
         window_len: Length of input window
         horizon: Prediction horizon
-        features: Feature columns
+        input_features: Feature columns to use as inputs (X)
+        output_features: Feature columns to predict as outputs (y)
 
     Returns:
         Tuple of (X, y) arrays
@@ -161,13 +181,15 @@ def create_windows(
     print("\nCreating sliding windows:")
     print(f"  - Window length: {window_len} timesteps")
     print(f"  - Horizon: {horizon} timesteps")
+    print(f"  - Input features: {len(input_features)} ({', '.join(input_features)})")
+    print(f"  - Output features: {len(output_features)} ({', '.join(output_features)})")
 
     X, y = SlidingWindowPanel(
         window_len=window_len,
         horizon=horizon,
-        unique_id_cols=["id"],
-        get_x=features,
-        get_y=features,
+        unique_id_cols=["station_id"],
+        get_x=input_features,
+        get_y=output_features,
         sort_by="timestamp",
     )(df)
 
@@ -183,6 +205,26 @@ def create_windows(
     return X, y
 
 
+def get_training_sql(station_name: str, max_distance: float) -> str:
+    """
+    Return a SQL query to obtain all observations from stations within `max_distance` of `station_name`.
+    """
+    with open(os.path.join(sql.PACKAGE_PATH, "get_training_data.sql")) as f:
+        t = f.read()
+    template = Template(t)
+    query = template.render(station_name=station_name, max_distance=max_distance)
+    return query
+
+
+def get_training_data(station_name: str, max_distance: float) -> pd.DataFrame:
+    """Retrieve a DataFrame of all observations within a certain radius of a station"""
+
+    sql = get_training_sql(station_name=station_name, max_distance=max_distance)
+    with db_connection() as conn:
+        df = pd.read_sql(sql, conn)
+    return df
+
+
 def train_model(
     df: pd.DataFrame,
     config: Optional[TrainingConfig] = None,
@@ -196,7 +238,7 @@ def train_model(
     Train a multi-station weather forecasting model.
 
     Args:
-        df: Input dataframe with columns ['id', 'timestamp'] + features
+        df: Input dataframe with columns ['station_id', 'timestamp'] + features
         config: Training configuration (uses defaults if None)
         model_dir: Directory to save model
         model_name: Base name for saved model file
@@ -225,9 +267,10 @@ def train_model(
 
     # Step 2: Create sliding windows
     print("\n[2/5] Creating sliding windows...")
-    # Include temporal features in training if enabled
-    all_features = features + get_temporal_feature_names() if include_temporal else features
-    X, y = create_windows(df_clean, config.window_len, config.horizon, all_features)
+    # Include temporal features in inputs only (not outputs)
+    input_features = features + get_temporal_feature_names() if include_temporal else features
+    output_features = features  # Only predict the actual weather variables
+    X, y = create_windows(df_clean, config.window_len, config.horizon, input_features, output_features)
 
     # Step 3: Create train/validation split
     print("\n[3/5] Creating train/validation split...")
@@ -269,10 +312,10 @@ def train_model(
     # Get validation predictions
     preds, targets = fcst.get_X_preds(X[splits[1]], y[splits[1]])
 
-    # Calculate MAE per variable
+    # Calculate MAE per variable (only for output features)
     mae_per_var = np.abs(preds - targets).mean(axis=(0, 1))
     mae_dict = {
-        feature: float(mae_val) for feature, mae_val in zip(features, mae_per_var)
+        feature: float(mae_val) for feature, mae_val in zip(output_features, mae_per_var)
     }
 
     print("\n  Validation MAE per variable:")
@@ -309,7 +352,7 @@ def train_model(
         total_samples=len(X),
         train_samples=len(splits[0]),
         valid_samples=len(splits[1]),
-        num_stations=df_clean["id"].nunique(),
+        num_stations=df_clean["station_id"].nunique(),
         final_train_loss=float(train_loss),
         final_valid_loss=float(valid_loss),
         mae_per_variable=mae_dict,
@@ -323,8 +366,7 @@ def main():
     # Load data
     data_path = "modelling/data.csv"
 
-    print(f"Loading data from {data_path}...")
-    df = pd.read_csv(data_path)
+    df = get_training_data("Coronet Tandems", 20)
 
     # Configure training
     config = TrainingConfig(window_len=60, horizon=6, n_epochs=20, batch_size=128)

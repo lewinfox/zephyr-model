@@ -9,3 +9,7 @@ check:
 format:
 	@uv run ruff check --select I --fix
 	@uv run ruff format
+
+.PHONY: update-db
+update-db:
+	@uv run --env-file .env python data_preparation/update_db.py
