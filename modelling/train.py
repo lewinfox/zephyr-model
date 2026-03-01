@@ -96,6 +96,11 @@ def extract_temporal_features(df: pd.DataFrame, timestamp_col: str = "timestamp"
     df["day_sin"] = np.sin(2 * np.pi * day_of_year / 365.25)
     df["day_cos"] = np.cos(2 * np.pi * day_of_year / 365.25)
 
+    # Day of week features (cyclical encoding for weekly patterns)
+    day_of_week = dt.dt.dayofweek
+    df["weekday_sin"] = np.sin(2 * np.pi * day_of_week / 7)
+    df["weekday_cos"] = np.cos(2 * np.pi * day_of_week / 7)
+
     return df
 
 
@@ -125,6 +130,10 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None, include_temporal:
 
     # Sort by station ID and timestamp
     df_sorted = df.sort_values(["station_id", "timestamp"]).reset_index(drop=True)
+
+    # Extract temporal features from timestamp
+    if include_temporal:
+        df_sorted = extract_temporal_features(df_sorted)
 
     # Extract temporal features from timestamp
     if include_temporal:
@@ -353,6 +362,9 @@ def train_model(
 
 def main():
     """Example usage."""
+
+    # Load data
+    data_path = "modelling/data.csv"
 
     df = get_training_data("Coronet Tandems", 20)
 

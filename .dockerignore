@@ -1,0 +1,73 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Large data files (will be mounted as volumes)
+data/
+zephyr-model.db
+*.db
+*.db-journal
+
+# Model files (will be mounted as volumes)
+models/*.pkl
+models/*.pth
+
+# Logs
+logs/
+*.log
+
+# Environment files with secrets
+.env
+
+# UV package manager
+uv.lock
+
+# Documentation (not needed in container)
+*.md
+!README.md
+
+# CI/CD
+.github/
+
+# Makefiles
+Makefile
