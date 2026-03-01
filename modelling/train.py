@@ -364,8 +364,6 @@ def main():
     """Example usage."""
 
     # Load data
-    data_path = "modelling/data.csv"
-
     df = get_training_data("Coronet Tandems", 20)
 
     # Configure training
