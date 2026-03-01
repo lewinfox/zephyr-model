@@ -1,10 +1,65 @@
-# How to Train Zephyr Model on AWS EC2 with GPU
+# How to Train Zephyr Model on a Cloud GPU
 
-This guide walks you through launching a GPU-enabled EC2 instance, deploying the Zephyr training container, and monitoring progress from your local machine.
+This guide covers your options for training the model on a cloud GPU, from free to paid.
 
 ---
 
-## Quick Start with Terraform (Recommended)
+## Cost Comparison
+
+| Option | Cost | GPU | Setup Time | Best For |
+|--------|------|-----|------------|----------|
+| **Google Colab** (free) | **$0** | T4 (15 GB) | 2 minutes | Quick runs, experimentation |
+| **Colab Pro** | ~$10/month | T4/A100 | 2 minutes | Longer sessions, priority GPU |
+| **AWS EC2 Spot** | ~$0.09/run | T4 (16 GB) | 10-15 minutes | Reproducible, automated pipelines |
+| **AWS EC2 On-demand** | ~$0.26/run | T4 (16 GB) | 10-15 minutes | Guaranteed availability |
+
+**Recommendation**: Start with Google Colab (free). Move to AWS if you need automation or longer sessions.
+
+---
+
+## Google Colab (Free — Recommended for Getting Started)
+
+Google Colab gives you a free T4 GPU in your browser. No setup, no billing, no teardown.
+
+### Quick Start
+
+1. Go to [colab.research.google.com](https://colab.research.google.com)
+2. **File → Upload notebook** → select `modelling/train_colab.ipynb`
+3. **Runtime → Change runtime type → T4 GPU**
+4. **Runtime → Run all**
+5. When prompted, upload your `data.csv` file (~31 MB)
+6. Training runs for ~30 minutes
+7. Download the trained `.pkl` model when complete
+
+That's it.
+
+### Limitations of the Free Tier
+
+- **Session length**: ~4 hours max, can be disconnected after ~90 minutes idle
+- **GPU access**: Not guaranteed during peak times (may get bumped to CPU)
+- **No persistent storage**: Files are lost when the session ends (use Google Drive to save)
+- **RAM**: 12.7 GB system RAM
+
+These are fine for this project — the dataset is small (31 MB) and training completes in ~30 minutes.
+
+### Tips
+
+- **Save to Google Drive**: Uncomment the Drive cells in the notebook to persist data and models between sessions. This avoids re-uploading `data.csv` each time.
+- **Increase batch size**: With a T4 GPU (15 GB VRAM), you can safely increase `BATCH_SIZE` to 512 or even 1024 for faster training.
+- **Keep the tab active**: Colab disconnects idle sessions. Keep the browser tab in the foreground while training.
+- **Colab Pro ($10/month)**: If you find the free tier unreliable, Pro gives you priority GPU access, longer sessions (24h), and access to A100 GPUs.
+
+### Notebook Location
+
+The Colab notebook is at `modelling/train_colab.ipynb`. It's self-contained — all training code is included so it works independently of the rest of the repo.
+
+---
+
+## AWS EC2 with GPU
+
+For automated or repeatable training runs, use AWS EC2. The Terraform setup makes this straightforward.
+
+### Quick Start with Terraform (Recommended)
 
 **The easiest way** to launch and manage training instances is with Terraform:
 
@@ -899,6 +954,6 @@ For more details on model deployment and inference, see `DEPLOYMENT.md` (coming 
 
 ---
 
-**Last Updated**: 2025-11-26
+**Last Updated**: 2026-03-01
 
 For questions or issues, refer to the main project documentation in `CLAUDE.md` or `README.md`.
