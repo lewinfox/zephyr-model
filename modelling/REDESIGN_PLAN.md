@@ -42,14 +42,20 @@ The current system trains a **PatchTST** model on a regional subset of stations 
 
 #### Option A: iTransformer (Recommended)
 
-**What it is**: An "inverted" transformer (ICLR 2024) that treats each variable as a token instead of each timestep. This is a natural fit for multivariate forecasting with cross-variable dependencies.
+**What it is**: An "inverted" transformer (ICLR 2024 Spotlight) that treats each variable as a token instead of each timestep. This is a natural fit for multivariate forecasting with cross-variable dependencies.
 
 **Why it's ideal for us**:
-- **Channel-dependent by design**: Attention operates across variables, so it naturally captures wind→temperature relationships
-- **Available in tsai**: Can be used via `tsai` or standalone PyTorch implementations
-- **Handles multi-station data well**: We can flatten station×variable into the token dimension, so the model sees all 19 stations' variables simultaneously in one forward pass
+- **Channel-dependent by design**: Attention operates across variables, so it naturally captures wind→temperature relationships. The attention weights are also interpretable — you can visualise which variables the model considers correlated
+- **Handles multi-station data well**: We can flatten station×variable into the token dimension, so the model sees all 19 stations' variables simultaneously in one forward pass. With 19 stations × 4 variables = 76 tokens, the attention is lightweight
 - **State-of-the-art results**: Outperforms PatchTST on most multivariate benchmarks, especially when cross-variable relationships matter
-- **Minimal code change**: The tsai `TSForecaster` interface supports swapping architectures with a single parameter change
+- **Efficient**: Attention is over variables (4-76 tokens) rather than over time patches (many more tokens), so it can actually be more efficient than PatchTST when you have many timesteps but few variables
+
+**Availability**: NOT in tsai. Available via:
+- `pip install iTransformer` (standalone package by lucidrains)
+- [thuml/Time-Series-Library](https://github.com/thuml/Time-Series-Library) (TSLib) — the official implementation
+- NeuralForecast, GluonTS
+
+Would require replacing the tsai `TSForecaster` with TSLib's training loop, but the data preparation code can be largely reused.
 
 **Input format**: Instead of (batch, 60_timesteps, N_features), iTransformer treats (batch, N_features, 60_timesteps) — each variable-station pair becomes a token with its 60-timestep history as the token embedding.
 
@@ -62,19 +68,30 @@ The current system trains a **PatchTST** model on a regional subset of stations 
 - Well-understood, proven architecture
 - But: channel-dependent PatchTST tends to underperform iTransformer on benchmarks
 
-#### Option C: Foundation Models (TimesFM / Chronos)
+#### Option C: Foundation Models (TimesFM / Chronos-2)
 
-**What they are**: Pre-trained time series models from Google and Amazon respectively.
+**TimesFM (Google)**: Decoder-only foundation model, 200M-500M params. Fundamentally **univariate** — does not jointly model multiple output variables. Poor fit for our use case.
 
-**Why NOT recommended**:
-- **TimesFM**: Primarily univariate; multivariate support is limited to independent channels. No spatial modelling
-- **Chronos**: Also univariate at its core. Would need to run 4×19 = 76 independent models
-- **Both**: Designed for zero-shot/few-shot on general time series. Our domain-specific trained model will almost certainly outperform them on NZ weather data
-- **Overhead**: New dependencies, different APIs, less control over architecture
+**Chronos-2 (Amazon)**: More interesting. 120M-param encoder-only model with a novel **group attention** mechanism that alternates between time attention (within each series) and group attention (across all series). This gives it true multivariate capabilities. Zero-shot capable with no training needed. Produces **probabilistic forecasts** (quantiles), which could be more useful for safety-critical paragliding decisions (uncertainty quantification). Open source, Apache 2.0.
+
+**Verdict**: TimesFM is not suitable. Chronos-2 is worth testing as a **zero-shot baseline** — if it performs well out of the box, it eliminates training entirely. However, a domain-specific trained model will likely outperform it on our specific dataset.
 
 #### Option D: TSMixer (MLP-based)
 
-A simpler all-MLP architecture. Competitive on some benchmarks but less expressive than transformers for capturing complex spatial-temporal patterns. Could serve as a baseline.
+An all-MLP architecture that alternates between time-mixing and feature-mixing layers. Channel-dependent via the feature-mixing component. **2-3x faster** than PatchTST with lower memory. Available in HuggingFace Transformers as `PatchTSMixer`. Good balance of simplicity and performance, but less expressive than transformers for complex spatial-temporal patterns.
+
+#### Option E: TSTPlus (Quick Win via tsai)
+
+Already available in tsai — works with a one-line change (`arch="TSTPlus"`). Channel-dependent unlike PatchTST. Not as modern as iTransformer, but **zero migration effort**. Good as a quick experiment before committing to a larger rewrite.
+
+### 2.3 Why Channel-Dependent Matters for Weather Data
+
+A 2025 analysis using Granger causality confirmed that channel-independent models only dominate benchmarks where cross-channel dependencies are weak. For weather data specifically:
+
+1. **Physical coupling**: Temperature, wind speed, gusts, and bearing are governed by shared atmospheric dynamics. Pressure gradients drive wind, wind advects temperature, gusts are caused by thermal instability
+2. **The benchmark illusion**: PatchTST wins on standard benchmarks (ETTh, Weather, Traffic) partly because those datasets have weak inter-channel correlations — NOT the case for our data
+3. **Joint distribution matters**: For paragliding safety, you care about combinations (high gust AND shifting bearing), not individual forecasts
+4. **Precedent**: State-of-the-art weather models (GraphCast, GenCast, Pangu-Weather) all use shared representations across variables
 
 ### 2.3 Recommended Architecture: iTransformer with All-Station Input
 
@@ -196,19 +213,27 @@ This gives us automated hyperparameter search and architecture tuning on cloud G
 
 **Estimated effort**: 1-2 hours
 
-### Phase 2: Architecture Switch to iTransformer (Low effort, High impact)
+### Phase 2: Architecture Experiments (Low-Medium effort, High impact)
 
-**Goal**: Replace PatchTST with iTransformer for better cross-station/cross-variable modelling.
+**Goal**: Find the best architecture for cross-station/cross-variable modelling.
 
-**Changes**:
-1. **Check tsai support**: If iTransformer is in tsai, change `arch="PatchTST"` to `arch="iTransformer"` in `TrainingConfig`
-2. **If not in tsai**: Use the standalone `iTransformer` PyTorch package or implement a thin wrapper. The [lucidrains/iTransformer](https://github.com/lucidrains/iTransformer) implementation is clean and minimal
-3. **Adjust input shape**: Ensure the data pipeline produces (batch, timesteps, n_variates) format
-4. **Update evaluation**: MAE per station per variable, plus aggregate metrics
+**Suggested experiment ladder** (each compared on the same validation set):
 
-**Estimated effort**: 2-4 hours (mostly testing)
+1. **Baseline**: Current PatchTST (channel-independent) on new all-station data
+2. **Quick win**: Switch to `TSTPlus` in tsai (`arch="TSTPlus"`) — channel-dependent, zero migration effort
+3. **Zero-shot test**: Try Chronos-2 with no training at all (`pip install chronos-forecasting`) — if competitive, it's the lowest-effort option
+4. **Best channel-dependent**: iTransformer via TSLib or lucidrains package — requires replacing tsai training loop but reuses data prep
+5. **If compute matters**: TSMixer/PatchTSMixer — 2-3x faster training
 
-**Fallback**: If iTransformer proves problematic, PatchTST in channel-dependent mode is a one-line change and still an improvement over the current setup.
+**Changes for iTransformer (primary target)**:
+1. Install via `pip install iTransformer` or clone [thuml/Time-Series-Library](https://github.com/thuml/Time-Series-Library)
+2. Replace the tsai `TSForecaster` with TSLib's training loop
+3. Adjust input shape to (batch, n_variates, timesteps) format
+4. Update evaluation: MAE per station per variable, plus aggregate metrics
+
+**Estimated effort**: 2-4 hours for steps 1-2 (one-line changes), 4-6 hours for step 4 (new training loop)
+
+**Fallback**: TSTPlus in tsai is a one-line change and still an improvement over channel-independent PatchTST.
 
 ### Phase 3: SkyPilot Integration (Very low effort, High impact)
 
@@ -290,7 +315,8 @@ Phases 1+2 should be done together (data format and model are coupled). Phase 3 
 2. **Switch to iTransformer** — purpose-built for multivariate forecasting with cross-variable attention. Minimal code change from current tsai-based pipeline
 3. **Use SkyPilot for GPU training** — 30 minutes of setup saves hours of training time and costs pennies via spot instances
 4. **Adopt the autoresearch pattern** — let Claude Code run 100+ experiments overnight to find optimal hyperparameters. This replaces weeks of manual tuning
-5. **Don't use foundation models** (TimesFM/Chronos) — they're univariate-focused and won't outperform a domain-specific model on this dataset
+5. **Test Chronos-2 as a zero-shot baseline** — it has true multivariate support and needs no training. If it's competitive, it's the lowest-effort path. But a domain-specific iTransformer will likely beat it
+6. **Skip TimesFM** — it's univariate-only for outputs
 
 The total investment is roughly 12 hours of hands-on work plus an overnight compute run. The expected outcome is a model that:
 - Predicts all 19 stations simultaneously (vs. one region at a time)
