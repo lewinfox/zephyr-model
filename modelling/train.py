@@ -135,10 +135,6 @@ def prepare_data(df: pd.DataFrame, features: list[str] = None, include_temporal:
     if include_temporal:
         df_sorted = extract_temporal_features(df_sorted)
 
-    # Extract temporal features from timestamp
-    if include_temporal:
-        df_sorted = extract_temporal_features(df_sorted)
-
     # Handle missing values per station group
     # Forward fill then backward fill within each station
     df_sorted[features] = df_sorted.groupby("station_id")[features].transform(
@@ -217,11 +213,17 @@ def get_training_sql(station_name: str, max_distance: float) -> str:
 
 
 def get_training_data(station_name: str, max_distance: float) -> pd.DataFrame:
-    """Retrieve a DataFrame of all observations within a certain radius of a station"""
-
+    """Retrieve a DataFrame of all observations within a certain radius of a station."""
     sql = get_training_sql(station_name=station_name, max_distance=max_distance)
     with db_connection() as conn:
         df = pd.read_sql(sql, conn)
+    return df
+
+
+def get_all_training_data() -> pd.DataFrame:
+    """Retrieve all observations from all stations."""
+    with db_connection() as conn:
+        df = pd.read_sql("select * from observations", conn)
     return df
 
 
@@ -363,8 +365,8 @@ def train_model(
 def main():
     """Example usage."""
 
-    # Load data
-    df = get_training_data("Coronet Tandems", 20)
+    # Load data - all stations across the country
+    df = get_all_training_data()
 
     # Configure training
     config = TrainingConfig(window_len=60, horizon=6, n_epochs=20, batch_size=128)
@@ -374,7 +376,7 @@ def main():
         df=df,
         config=config,
         model_dir="models",
-        model_name="weather_forecast_multi_station",
+        model_name="weather_forecast_all_stations",
     )
 
     # Print summary
